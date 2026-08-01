@@ -1,0 +1,14 @@
+data/
+__pycache__/
+*.pyc
+.env
+.venv/
+venv/
+node_modules/
+.DS_Store
+Thumbs.db
+/*.jpg
+/*.jpeg
+/*.png
+/*.webp
+/*.svg

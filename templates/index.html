@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PatrolTube</title>
+  <link rel="icon" type="image/png" href="/static/favicon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Contrail+One&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="header">
+    <img src="/static/logo.png" alt="PatrolTube Logo" class="header-logo" />
+    <div class="header-controls">
+      <span class="score-badge score-high video-count" id="videoCount">0</span>
+      <div class="search-bar">
+        <input type="text" id="searchInput" placeholder="Search videos..." />
+        <select id="sortBy">
+          <option value="confidence">Relevance</option>
+          <option value="upload_date_desc">Newest First</option>
+          <option value="upload_date_asc">Oldest First</option>
+          <option value="views">Most Views</option>
+          <option value="duration">Duration</option>
+        </select>
+      </div>
+      <span class="last-refresh" id="lastRefresh">Last Refresh --</span>
+      <button class="refresh-btn" id="refreshBtn" title="Refresh cache">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+      </button>
+      <span class="badge">BETA</span>
+    </div>
+  </header>
+
+  <div class="container">
+    <div class="error" id="error"></div>
+
+    <div class="loading" id="loading">Searching YouTube and analyzing results...</div>
+
+    <div class="video-grid" id="videoGrid"></div>
+  </div>
+
+  <script>
+    const videoGrid = document.getElementById('videoGrid');
+    const loading = document.getElementById('loading');
+    const errorEl = document.getElementById('error');
+    const searchInput = document.getElementById('searchInput');
+    const sortBy = document.getElementById('sortBy');
+    const lastRefreshEl = document.getElementById('lastRefresh');
+    const videoCountEl = document.getElementById('videoCount');
+    const refreshBtn = document.getElementById('refreshBtn');
+    let lastVideos = [];
+    let isLoading = false;
+    let currentQuery = '';
+    let currentEndpoint = '/api/cache';
+    let currentOffset = 0;
+    let hasMoreVideos = true;
+
+    function updateLastRefresh(timestamp) {
+      if (!lastRefreshEl) return;
+      if (!timestamp) {
+        lastRefreshEl.textContent = 'Last Refresh --';
+        return;
+      }
+      const d = new Date(timestamp * 1000);
+      const m = d.toLocaleString(undefined, { month: 'short' });
+      const day = d.getDate();
+      const year = d.getFullYear();
+      const h = d.getHours().toString().padStart(2, '0');
+      const min = d.getMinutes().toString().padStart(2, '0');
+      lastRefreshEl.textContent = `Last Refresh ${m} ${day}, ${year} ${h}:${min}`;
+    }
+
+    function formatDuration(seconds) {
+      if (!seconds) return '--:--';
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = seconds % 60;
+      if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+      return `${m}:${s.toString().padStart(2, '0')}`;
+    }
+
+    function formatViews(viewCount) {
+      if (!viewCount) return '';
+      if (viewCount >= 1000000) return (viewCount / 1000000).toFixed(1) + 'M views';
+      if (viewCount >= 1000) return (viewCount / 1000).toFixed(1) + 'K views';
+      return viewCount + ' views';
+    }
+
+    function scoreClass(score) {
+      if (score >= 70) return 'score-high';
+      if (score >= 40) return 'score-mid';
+      return 'score-low';
+    }
+
+    function parseUploadDate(video) {
+      const raw = video.upload_date || video.uploadDate || '';
+      if (!raw) return null;
+      const s = String(raw).replace(/[-:\\s]/g, '');
+      if (s.length >= 8) {
+        const y = s.slice(0, 4);
+        const m = s.slice(4, 6);
+        const d = s.slice(6, 8);
+        return new Date(`${y}-${m}-${d}T00:00:00`);
+      }
+      return null;
+    }
+
+    function sortVideos(videos, field) {
+      const sorted = [...videos];
+      switch (field) {
+        case 'upload_date_desc':
+          sorted.sort((a, b) => {
+            const da = parseUploadDate(a);
+            const db = parseUploadDate(b);
+            if (!da && !db) return 0;
+            if (!da) return 1;
+            if (!db) return -1;
+            return db - da;
+          });
+          break;
+        case 'upload_date_asc':
+          sorted.sort((a, b) => {
+            const da = parseUploadDate(a);
+            const db = parseUploadDate(b);
+            if (!da && !db) return 0;
+            if (!da) return 1;
+            if (!db) return -1;
+            return da - db;
+          });
+          break;
+        case 'views':
+          sorted.sort((a, b) => (b.view_count || 0) - (a.view_count || 0));
+          break;
+        case 'duration':
+          sorted.sort((a, b) => (b.duration || 0) - (a.duration || 0));
+          break;
+        case 'confidence':
+        default:
+          sorted.sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+          break;
+      }
+      return sorted;
+    }
+
+    function formatUploadDate(video) {
+      const d = parseUploadDate(video);
+      if (!d) return video.upload_date ? String(video.upload_date) : '';
+      const now = new Date();
+      const diff = now - d;
+      const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+      const m = d.toLocaleString(undefined, { month: 'short' });
+      const day = d.getDate();
+      const year = d.getFullYear();
+      const dateStr = `${m} ${day}, ${year}`;
+      if (days < 1) return 'Today · ' + dateStr;
+      if (days === 1) return 'Yesterday · ' + dateStr;
+      if (days < 7) return `${days} days ago · ${dateStr}`;
+      return dateStr;
+    }
+
+    function renderVideos(videos, append = false) {
+      if (!append) {
+        lastVideos = videos;
+        videoGrid.innerHTML = '';
+      } else {
+        lastVideos = [...lastVideos, ...videos];
+      }
+
+      if (lastVideos.length === 0) {
+        return;
+      }
+
+      const sorted = sortVideos(lastVideos, sortBy.value);
+
+      sorted.forEach(v => {
+        const card = document.createElement('div');
+        card.className = 'video-card';
+        card.innerHTML = `
+          <a href="${v.url}" target="_blank" class="thumb">
+            <img src="${v.thumbnail || ''}" alt="" loading="lazy" />
+            <span class="duration">${formatDuration(v.duration)}</span>
+          </a>
+          <div class="body">
+            <a href="${v.url}" target="_blank" class="title">${v.title}</a>
+            <div class="channel">${v.channel || 'Unknown channel'}</div>
+            <div class="meta">
+              <span class="score-badge ${scoreClass(v.confidence)}">${v.confidence}% match</span>
+              ${v.matched_cities && v.matched_cities.length ? v.matched_cities.map(c => `<span class="tag">${c}</span>`).join('') : ''}
+              ${v.cam_score > 0 ? '<span class="tag">Body/Dash Cam</span>' : ''}
+              ${v.ohio_score > 0 ? `<span class="tag">Ohio PD (${v.ohio_score}%)</span>` : ''}
+            </div>
+            <div style="font-size:0.75rem;color:var(--text-muted);margin-top:0.25rem;">
+              ${formatViews(v.view_count)} ${formatUploadDate(v) ? '· ' + formatUploadDate(v) : ''}
+            </div>
+            ${v.match_reason ? `<div style="font-size:0.75rem;color:var(--text-secondary);margin-top:0.25rem;">${v.match_reason}</div>` : ''}
+          </div>
+        `;
+        videoGrid.appendChild(card);
+      });
+    }
+
+    function enrichMissingDates(videos) {
+      const missingIds = videos
+        .filter(v => !v.upload_date)
+        .map(v => v.id)
+        .filter(Boolean);
+      
+      if (!missingIds.length) return;
+      
+      fetch('/api/enrich', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({video_ids: missingIds}),
+      })
+      .then(r => r.json())
+      .then(data => {
+        if (data && data.results) {
+          const updated = lastVideos.map(v => {
+            if (!v.upload_date && data.results[v.id]) {
+              return {...v, ...data.results[v.id]};
+            }
+            return v;
+          });
+          lastVideos = updated;
+          renderVideos(updated);
+        }
+      })
+      .catch(e => console.error('Enrichment failed', e));
+    }
+
+    async function loadMoreVideos() {
+      if (isLoading || !hasMoreVideos) return;
+      const totalCount = parseInt(videoCountEl.textContent || '0', 10);
+      if (lastVideos.length >= totalCount) return;
+
+      isLoading = true;
+      loading.classList.add('active');
+
+      const limit = 25;
+
+      const params = new URLSearchParams();
+      params.set('max_results', String(limit));
+      params.set('min_confidence', '0');
+      params.set('require_cam', 'false');
+      params.set('sort_by', sortBy.value);
+      params.set('offset', String(currentOffset));
+      if (currentQuery) params.set('q', currentQuery);
+
+      try {
+        const res = await fetch(currentEndpoint + '?' + params.toString());
+        const data = await res.json();
+        loading.classList.remove('active');
+
+        if (data.videos && data.videos.length) {
+          enrichMissingDates(data.videos);
+          const sorted = sortVideos(data.videos, sortBy.value);
+          renderVideos(sorted, true);
+          currentOffset += data.videos.length;
+        } else {
+          hasMoreVideos = false;
+        }
+      } catch (e) {
+        loading.classList.remove('active');
+        console.error('Load more failed', e);
+      } finally {
+        isLoading = false;
+      }
+    }
+
+    function setupInfiniteScroll() {
+      const sentinel = document.createElement('div');
+      sentinel.id = 'scrollSentinel';
+      sentinel.style.height = '1px';
+      document.querySelector('.container').appendChild(sentinel);
+
+      const observer = new IntersectionObserver((entries) => {
+        if (entries[0].isIntersecting) {
+          loadMoreVideos();
+        }
+      }, { rootMargin: '200px' });
+
+      observer.observe(sentinel);
+    }
+
+    async function cacheStatus() {
+      try {
+        const res = await fetch('/api/cache/status');
+        const data = await res.json();
+        updateLastRefresh(data.updated_at);
+        if (videoCountEl && data.count !== undefined) {
+          videoCountEl.textContent = `${data.count} videos`;
+        }
+      } catch (e) {
+        console.error('Cache status failed', e);
+      }
+    }
+
+    async function doSearch(query = '') {
+      if (isLoading) return;
+      isLoading = true;
+      
+      errorEl.classList.remove('active');
+      videoGrid.innerHTML = '';
+      loading.classList.add('active');
+      hasMoreVideos = true;
+      currentQuery = query.trim();
+      currentEndpoint = currentQuery ? '/api/search' : '/api/cache';
+      currentOffset = 0;
+
+      const params = new URLSearchParams();
+      if (currentQuery) params.set('q', currentQuery);
+      params.set('max_results', '50');
+      params.set('min_confidence', '0');
+      params.set('require_cam', 'false');
+      params.set('sort_by', sortBy.value);
+      params.set('offset', '0');
+
+      try {
+        const res = await fetch(currentEndpoint + '?' + params.toString());
+        const data = await res.json();
+        loading.classList.remove('active');
+        
+        if (data.videos && data.videos.length) {
+          lastVideos = data.videos;
+          renderVideos(data.videos);
+          currentOffset = data.videos.length;
+          setupInfiniteScroll();
+          enrichMissingDates(data.videos);
+        }
+        
+        updateLastRefresh(data.updated_at);
+        
+        if (videoCountEl) {
+          cacheStatus();
+        }
+      } catch (e) {
+        loading.classList.remove('active');
+        errorEl.textContent = 'Search failed: ' + e.message;
+        errorEl.classList.add('active');
+      } finally {
+        isLoading = false;
+      }
+    }
+
+    sortBy.addEventListener('change', () => {
+      doSearch(currentQuery);
+    });
+
+    searchInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        doSearch(searchInput.value);
+      }
+    });
+
+    document.addEventListener('DOMContentLoaded', async () => {
+      await cacheStatus();
+      doSearch('');
+    });
+
+    if (refreshBtn) {
+      refreshBtn.addEventListener('click', async () => {
+        if (isLoading) return;
+        isLoading = true;
+        refreshBtn.disabled = true;
+        refreshBtn.classList.add('spinning');
+        refreshBtn.style.opacity = '0.6';
+        
+        try {
+          const res = await fetch('/api/cache/refresh', { method: 'POST' });
+          const data = await res.json();
+          await cacheStatus();
+          await doSearch(searchInput.value);
+        } catch (e) {
+          console.error('Cache refresh failed', e);
+        } finally {
+          refreshBtn.disabled = false;
+          refreshBtn.classList.remove('spinning');
+          refreshBtn.style.opacity = '1';
+          isLoading = false;
+        }
+      });
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+version: "3.8"
+
+services:
+  police-video-app:
+    build: .
+    container_name: police-video-app
+    ports:
+      - "8001:8000"
+    environment:
+      - TZ=America/New_York
+      - YOUTUBE_API_KEY=${YOUTUBE_API_KEY}
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
