@@ -2,38 +2,67 @@ import re
 from typing import Optional
 
 KNOWN_OHIO_CITIES = [
-    "Akron", "Athens", "Avon", "Avon Lake", "Bay Village", "Beavercreek", 
-    "Bowling Green", "Broadview Heights", "Canton", "Centerville", "Chillicothe", 
-    "Cincinnati", "Cleveland", "Cleveland Heights", "Columbus", "Cuyahoga Falls", 
-    "Dayton", "Dublin", "Elyria", "Euclid", "Fairborn", "Fairfield", "Findlay", 
-    "Forest Park", "Gahanna", "Grove City", "Hamilton", "Harrison", "Hilliard", 
-    "Huber Heights", "Kettering", "Lakewood", "Lancaster", "Lebanon", "Lima", 
-    "Lorain", "Mansfield", "Marietta", "Marion", "Maumee", "Miamisburg", 
-    "Middletown", "Monroe", "Moraine", "Newark", "North Ridgeville", 
-    "North Olmsted", "Olmsted Falls", "Oregon", "Oxford", "Parma", 
-    "Parma Heights", "Pickerington", "Port Clinton", "Portsmouth", "Reynoldsburg", 
-    "Riverside", "Rocky River", "Sandusky", "Seven Hills", "Sharonville", 
-    "Springdale", "Springfield", "Steubenville", "Sylvania", "Toledo", "Trotwood", 
-    "Upper Arlington", "Westlake", "Westerville", "Worthington", "Xenia", 
+    "Akron", "Alliance", "Amherst", "Ashland", "Ashtabula", "Athens", "Aurora", 
+    "Avon", "Avon Lake", "Barberton", "Bay Village", "Beachwood", "Beavercreek", 
+    "Bedford", "Bedford Heights", "Bellbrook", "Bellefontaine", "Bellevue", 
+    "Belpre", "Berea", "Bexley", "Blue Ash", "Bowling Green", "Brecksville", 
+    "Broadview Heights", "Brook Park", "Brooklyn", "Brookville", "Brunswick", 
+    "Bryan", "Bucyrus", "Cambridge", "Campbell", "Canal Fulton", "Canal Winchester", 
+    "Canfield", "Canton", "Carlisle", "Celina", "Centerville", "Chardon", 
+    "Cheviot", "Chillicothe", "Cincinnati", "Circleville", "Clayton", "Cleveland", 
+    "Cleveland Heights", "Clyde", "Columbiana", "Columbus", "Conneaut", 
+    "Cortland", "Coshocton", "Cuyahoga Falls", "Dayton", "Deer Park", "Defiance", 
+    "Delaware", "Delphos", "Dover", "Dublin", "East Cleveland", "East Liverpool", 
+    "Eastlake", "Eaton", "Elyria", "Englewood", "Euclid", "Fairborn", "Fairfield", 
+    "Fairlawn", "Fairview Park", "Findlay", "Forest Park", "Fostoria", "Franklin", 
+    "Fremont", "Gahanna", "Galion", "Garfield Heights", "Geneva", "Germantown", 
+    "Girard", "Grandview Heights", "Green", "Greenville", "Grove City", 
+    "Groveport", "Hamilton", "Harrison", "Heath", "Highland Heights", "Hilliard", 
+    "Huber Heights", "Hudson", "Huron", "Independence", "Ironton", "Jackson", 
+    "Johnstown", "Kenting", "Kering", "Kettering", "Kirtland", "Lakewood", 
+    "Lancaster", "Lebanon", "Lima", "Logan", "London", "Lorain", "Louisville", 
+    "Loveland", "Lyndhurst", "Macedonia", "Madeira", "Mansfield", "Maple Heights", 
+    "Marietta", "Marion", "Martins Ferry", "Marysville", "Mason", "Massillon", 
+    "Maumee", "Mayfield Heights", "Medina", "Mentor", "Mentor-on-the-Lake", 
+    "Miamisburg", "Middleburg Heights", "Middletown", "Milford", "Monroe", 
+    "Montgomery", "Moraine", "Mount Healthy", "Mount Vernon", "Munroe Falls", 
+    "Napoleon", "Nelsonville", "New Albany", "New Carlisle", "New Lexington", 
+    "New Philadelphia", "Newark", "Niles", "North Canton", "North College Hill", 
+    "North Olmsted", "North Ridgeville", "North Royalton", "Northwood", "Norton", 
+    "Norwalk", "Norwood", "Oakwood", "Oberlin", "Obetz", "Olmsted Falls", 
+    "Ontario", "Oregon", "Orrville", "Oxford", "Painesville", "Parma", 
+    "Parma Heights", "Pataskala", "Pepper Pike", "Perrysburg", "Pickerington", 
+    "Piqua", "Plain City", "Port Clinton", "Portsmouth", "Powell", "Ravenna", 
+    "Reading", "Reynoldsburg", "Richmond Heights", "Rittman", "Riverside", 
+    "Rocky River", "Rossford", "St. Clairsville", "St. Marys", "Salem", 
+    "Sandusky", "Seven Hills", "Shaker Heights", "Sharonville", "Sheffield Lake", 
+    "Shelby", "Sidney", "Solon", "South Euclid", "South Russell", "Springboro", 
+    "Springdale", "Springfield", "Steubenville", "Stow", "Strongsville", 
+    "Struthers", "Sunbury", "Sylvania", "Tallmadge", "Tiffin", "Tipp City", 
+    "Toledo", "Toronto", "Trenton", "Trotwood", "Troy", "Uhrichsville", 
+    "Union", "University Heights", "Upper Arlington", "Urbana", "Van Wert", 
+    "Vandalia", "Vermilion", "Wadsworth", "Wapakoneta", "Warren", 
+    "Warrensville Heights", "Washington Court House", "Wauseon", "Waverly", 
+    "Wellston", "West Carrollton", "Westerville", "Westlake", "Whitehall", 
+    "Wickliffe", "Willard", "Willoughby", "Willoughby Hills", "Willowick", 
+    "Wilmington", "Wooster", "Worthington", "Wyoming", "Xenia", "Yellow Springs", 
     "Youngstown", "Zanesville"
 ]
 
 KNOWN_OHIO_COUNTIES = [
-    "Adams", "Allen", "Ashland", "Ashtabula", "Athens", "Auglaize", 
-    "Belmont", "Brown", "Butler", "Carroll", "Champaign", "Clark", 
-    "Clermont", "Clinton", "Columbiana", "Coshocton", "Crawford", "Cuyahoga", 
-    "Darke", "Defiance", "Delaware", "Erie", "Fairfield", "Fayette", 
-    "Franklin", "Fulton", "Gallia", "Geauga", "Greene", "Guernsey", 
-    "Hamilton", "Hancock", "Hardin", "Harrison", "Henry", "Highland", 
-    "Hocking", "Holmes", "Huron", "Jackson", "Jefferson", "Knox", 
-    "Lake", "Lawrence", "Licking", "Logan", "Lorain", "Lucas", 
-    "Madison", "Mahoning", "Marion", "Medina", "Meigs", "Mercer", 
-    "Miami", "Monroe", "Montgomery", "Morgan", "Morrow", "Muskingum", 
-    "Noble", "Ottawa", "Paulding", "Perry", "Pickaway", "Pike", 
-    "Portage", "Preble", "Putnam", "Richland", "Ross", "Sandusky", 
-    "Scioto", "Seneca", "Shelby", "Stark", "Summit", "Trumbull", 
-    "Tuscarawas", "Union", "Van Wert", "Vinton", "Warren", "Washington", 
-    "Wayne", "Williams", "Wood", "Wyandot"
+    "Adams", "Allen", "Ashland", "Ashtabula", "Athens", "Auglaize", "Belmont", 
+    "Brown", "Butler", "Carroll", "Champaign", "Clark", "Clermont", "Clinton", 
+    "Columbiana", "Coshocton", "Crawford", "Cuyahoga", "Darke", "Defiance", 
+    "Delaware", "Erie", "Fairfield", "Fayette", "Franklin", "Fulton", "Gallia", 
+    "Geauga", "Greene", "Guernsey", "Hamilton", "Hancock", "Hardin", "Harrison", 
+    "Henry", "Highland", "Hocking", "Holmes", "Huron", "Jackson", "Jefferson", 
+    "Knox", "Lake", "Lawrence", "Licking", "Logan", "Lorain", "Lucas", "Madison", 
+    "Mahoning", "Marion", "Medina", "Meigs", "Mercer", "Miami", "Monroe", 
+    "Montgomery", "Morgan", "Morrow", "Muskingum", "Noble", "Ottawa", "Paulding", 
+    "Perry", "Pickaway", "Pike", "Portage", "Preble", "Putnam", "Richland", 
+    "Ross", "Sandusky", "Scioto", "Seneca", "Shelby", "Stark", "Summit", 
+    "Trumbull", "Tuscarawas", "Union", "Van Wert", "Vinton", "Warren", 
+    "Washington", "Wayne", "Williams", "Wood", "Wyandot"
 ]
 
 KNOWN_STATE_AGENCIES = [
@@ -43,7 +72,10 @@ KNOWN_STATE_AGENCIES = [
     "Ohio BCI",
     "Bureau of Criminal Investigation",
     "Ohio Department of Public Safety",
-    "ODPS"
+    "ODPS",
+    "Ohio PD",
+    "Ohio Attorney General's Office",
+    "Ohio Department of Public Safety"
 ]
 
 BODY_CAM_KEYWORDS = [
@@ -103,7 +135,7 @@ def is_ohio_police_entity(text: str) -> bool:
             return True
     # Check for Ohio counties with sheriff
     for county in KNOWN_OHIO_COUNTIES:
-        pattern = f"{county.lower()} (county )?(sheriff|police|department)"
+        pattern = f"{county.lower()} (county )?(sheriff|police|department|highway|hp)"
         if re.search(pattern, text_lower):
             return True
     return False

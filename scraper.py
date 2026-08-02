@@ -18,6 +18,8 @@ DATA_DIR = os.path.join(BASE_DIR, "data")
 CACHE_PATH = os.path.join(DATA_DIR, "cache.json")
 CACHE_LOCK = threading.Lock()
 CACHE_TTL_SECONDS = 60 * 60
+REQUEST_DELAY = 1.5
+BATCH_DELAY = 2.0
 
 DEFAULT_QUERIES = [
     "police body cam Ohio",
@@ -173,18 +175,24 @@ def _merge_videos(old: list[dict], new: list[dict]) -> list[dict]:
 
 def refresh_cache_background() -> dict:
     raw_ydl = asyncio.run(search_ohio_police_videos(max_per_query=25, pages=1))
-    raw_api = _search_recent_ohio_videos_api(max_results=50)
-    
-    raw = raw_ydl + raw_api
-    seen = set()
-    deduped = []
-    for v in raw:
-        vid_id = v.get("id")
-        if vid_id and vid_id not in seen:
-            seen.add(vid_id)
-            deduped.append(v)
 
-    scored = [_score_video(v) for v in deduped]
+    existing = load_cache()
+    merged = _merge_videos(existing.get("videos", []), raw_ydl)
+    data = {
+        "videos": merged,
+        "updated_at": _now(),
+    }
+    save_cache(data)
+    logger.info(f"Cache refreshed (yt-dlp): {len(merged)} videos")
+
+    time.sleep(30 * 60)
+
+    raw_api = _search_recent_ohio_videos_api(max_results=50)
+
+    existing = load_cache()
+    merged = _merge_videos(existing.get("videos", []), raw_api)
+
+    scored = [_score_video(v) for v in merged]
     filtered = _filter_scored(scored, min_confidence=15.0, require_cam=False)
 
     missing_ids = [v["id"] for v in filtered if v.get("id") and not v.get("upload_date")][:20]
@@ -195,6 +203,9 @@ def refresh_cache_background() -> dict:
             if vid_id and vid_id in meta:
                 v.update(meta[vid_id])
 
+    scored = [_score_video(v) for v in filtered]
+    filtered = _filter_scored(scored, min_confidence=15.0, require_cam=False)
+
     existing = load_cache()
     merged = _merge_videos(existing.get("videos", []), filtered)
     merged.sort(key=lambda x: x.get("confidence", 0), reverse=True)
@@ -204,7 +215,8 @@ def refresh_cache_background() -> dict:
         "updated_at": _now(),
     }
     save_cache(data)
-    logger.info(f"Cache refreshed: {len(merged)} videos")
+    retry_null_upload_dates()
+    logger.info(f"Cache refreshed (api): {len(merged)} videos")
     return data
 
 def get_cached_videos(
@@ -253,35 +265,63 @@ def search_youtube(query: str, max_results: int = 20, pages: int = 1) -> list[di
         "ignoreerrors": True,
         "skip_download": True,
         "dump_single_json": False,
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Referer": "https://www.youtube.com/",
+        },
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android"],
+                "skip": ["dash", "hls"],
+            },
+        },
     }
-    
+
+    cookie_file = os.environ.get("YTDL_COOKIE_FILE")
+    if cookie_file and os.path.exists(cookie_file):
+        ydl_opts["cookiefile"] = cookie_file
+
     results = []
     seen_ids = set()
     search_query = f"ytsearch{max_results}:{query}"
-    
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(search_query, download=False)
-            if info and "entries" in info:
-                for entry in info["entries"]:
-                    if entry:
-                        vid_id = entry.get("id")
-                        if vid_id and vid_id not in seen_ids:
-                            seen_ids.add(vid_id)
-                            results.append({
-                                "id": vid_id,
-                                "title": entry.get("title", ""),
-                                "channel": entry.get("channel", "") or entry.get("uploader", ""),
-                                "url": entry.get("webpage_url", f"https://www.youtube.com/watch?v={vid_id}"),
-                                "thumbnail": entry.get("thumbnail") or (f"https://i.ytimg.com/vi/{vid_id}/hqdefault.jpg" if vid_id else None),
-                                "duration": entry.get("duration"),
-                                "view_count": entry.get("view_count"),
-                                "upload_date": entry.get("upload_date"),
-                                "description": entry.get("description", "") or "",
-                            })
-    except Exception as e:
-        logger.error(f"Search error for '{query}': {e}")
-    
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(search_query, download=False)
+                if info and "entries" in info:
+                    for entry in info["entries"]:
+                        if entry:
+                            vid_id = entry.get("id")
+                            if vid_id and vid_id not in seen_ids:
+                                seen_ids.add(vid_id)
+                                results.append({
+                                    "id": vid_id,
+                                    "title": entry.get("title", ""),
+                                    "channel": entry.get("channel", "") or entry.get("uploader", ""),
+                                    "url": entry.get("webpage_url", f"https://www.youtube.com/watch?v={vid_id}"),
+                                    "thumbnail": entry.get("thumbnail") or (f"https://i.ytimg.com/vi/{vid_id}/hqdefault.jpg" if vid_id else None),
+                                    "duration": entry.get("duration"),
+                                    "view_count": entry.get("view_count"),
+                                    "upload_date": entry.get("upload_date"),
+                                    "description": entry.get("description", "") or "",
+                                })
+            break
+        except Exception as e:
+            err_str = str(e)
+            is_forbidden = "403" in err_str or "Forbidden" in err_str
+            if is_forbidden and attempt < max_retries - 1:
+                wait = 2.0 * (2 ** attempt)
+                logger.warning(f"yt_dlp 403 for '{query}', retry {attempt + 1}/{max_retries} in {wait}s")
+                time.sleep(wait)
+            else:
+                logger.error(f"Search error for '{query}': {e}")
+                break
+    time.sleep(REQUEST_DELAY)
+
     return results
 
 def search_youtube_api(query: str, max_results: int = 20, order: str = "date") -> list[dict]:
@@ -328,6 +368,7 @@ def search_youtube_api(query: str, max_results: int = 20, order: str = "date") -
         if vid_id in stats_map:
             v.update(stats_map[vid_id])
     
+    time.sleep(REQUEST_DELAY)
     return results
 
 def _fetch_youtube_video_stats(video_ids: list[str], api_key: str) -> dict[str, dict]:
@@ -364,6 +405,8 @@ def _fetch_youtube_video_stats(video_ids: list[str], api_key: str) -> dict[str, 
                 }
         except Exception as e:
             logger.error(f"YouTube API stats error: {e}")
+        if i + batch_size < len(video_ids):
+            time.sleep(BATCH_DELAY)
     
     return id_map
 
@@ -408,6 +451,7 @@ def _search_recent_ohio_videos_api(max_results: int = 50) -> list[dict]:
             vid_id = v.get("id")
             if vid_id and vid_id not in all_videos:
                 all_videos[vid_id] = v
+        time.sleep(REQUEST_DELAY)
     return list(all_videos.values())
 
 def score_video(video: dict) -> dict:
@@ -517,7 +561,84 @@ def enrich_videos_metadata(video_ids: list[str]) -> dict[str, dict]:
             }
         except Exception as e:
             logger.error(f"HTML enrichment failed for {vid_id}: {e}")
+        time.sleep(REQUEST_DELAY)
     
+    return id_map
+
+def retry_null_upload_dates(max_retries: int = 3, delay_seconds: float = 2.0) -> int:
+    data = load_cache()
+    videos = data.get("videos", [])
+    null_ids = [v["id"] for v in videos if v.get("id") and not v.get("upload_date")]
+    if not null_ids:
+        return 0
+    fixed = 0
+    for attempt in range(max_retries):
+        remaining = [vid_id for vid_id in null_ids if not _has_upload_date(videos, vid_id)]
+        if not remaining:
+            break
+        batch_size = 50
+        for i in range(0, len(remaining), batch_size):
+            batch = remaining[i:i + batch_size]
+            api_key = os.environ.get("YOUTUBE_API_KEY")
+            if api_key:
+                meta = _enrich_with_youtube_api(batch, api_key)
+            else:
+                meta = {}
+            still_null = []
+            for vid_id in batch:
+                if vid_id in meta and meta[vid_id].get("upload_date"):
+                    _update_video_field(videos, vid_id, "upload_date", meta[vid_id]["upload_date"])
+                    fixed += 1
+                else:
+                    still_null.append(vid_id)
+            if still_null and attempt == max_retries - 1:
+                html_meta = _enrich_via_html(still_null)
+                for vid_id, info in html_meta.items():
+                    if info.get("upload_date"):
+                        _update_video_field(videos, vid_id, "upload_date", info["upload_date"])
+                        fixed += 1
+            if i + batch_size < len(remaining):
+                time.sleep(delay_seconds)
+        if attempt < max_retries - 1:
+            time.sleep(delay_seconds * 2)
+    if fixed > 0:
+        data["videos"] = videos
+        data["updated_at"] = _now()
+        save_cache(data)
+        logger.info(f"Retry fixed {fixed} null upload dates")
+    return fixed
+
+def _has_upload_date(videos: list[dict], vid_id: str) -> bool:
+    for v in videos:
+        if v.get("id") == vid_id:
+            return bool(v.get("upload_date"))
+    return False
+
+def _update_video_field(videos: list[dict], vid_id: str, field: str, value: str) -> None:
+    for v in videos:
+        if v.get("id") == vid_id:
+            v[field] = value
+            return
+
+def _enrich_via_html(video_ids: list[str]) -> dict[str, dict]:
+    id_map = {}
+    for vid_id in video_ids:
+        try:
+            url = f"https://www.youtube.com/watch?v={vid_id}"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                html = resp.read().decode("utf-8", errors="ignore")
+            upload_date = None
+            m = re.search(r'"uploadDate"\s*:\s*"([^"]+)"', html)
+            if m:
+                upload_date = m.group(1)
+            else:
+                m = re.search(r'\b(20\d{2})(\d{2})(\d{2})\b', html)
+                if m:
+                    upload_date = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+            id_map[vid_id] = {"upload_date": upload_date}
+        except Exception as e:
+            logger.error(f"HTML retry enrichment failed for {vid_id}: {e}")
     return id_map
 
 def _enrich_with_youtube_api(video_ids: list[str], api_key: str) -> dict[str, dict]:
@@ -552,5 +673,7 @@ def _enrich_with_youtube_api(video_ids: list[str], api_key: str) -> dict[str, di
                 }
         except Exception as e:
             logger.error(f"YouTube API enrichment error: {e}")
+        if i + batch_size < len(video_ids):
+            time.sleep(BATCH_DELAY)
     
     return id_map
