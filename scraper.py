@@ -5,8 +5,13 @@ import re
 import json
 import time
 import threading
+import logging
+import urllib.parse
 from typing import Optional, Dict, List
 from ohio_detector import calculate_ohio_confidence, is_body_cam_or_dash_cam
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -74,16 +79,6 @@ DEFAULT_QUERIES = [
     "Ohio police dash camera",
     "Ohio law enforcement body cam",
     "Ohio law enforcement dash cam",
-    "Ohio police body cam 2024",
-    "Ohio police body cam 2025",
-    "Ohio police dash cam 2024",
-    "Ohio police dash cam 2025",
-    "Ohio police bodycam 2024",
-    "Ohio police bodycam 2025",
-    "Ohio police dashcam 2024",
-    "Ohio police dashcam 2025",
-    "Ohio police footage 2024",
-    "Ohio police footage 2025",
     "police body cam footage Ohio",
     "police dash cam footage Ohio",
     "Ohio police car camera",
@@ -97,6 +92,14 @@ DEFAULT_QUERIES = [
     "Ohio BCI body cam",
     "Ohio police department body cam",
     "Ohio police department dash cam",
+    "police body cam Ohio 2025",
+    "police dash cam Ohio 2025",
+    "Ohio police body cam 2025",
+    "Ohio police dash cam 2025",
+    "police body cam Ohio 2024",
+    "police dash cam Ohio 2024",
+    "Ohio police body cam 2024",
+    "Ohio police dash cam 2024",
 ]
 
 def _now() -> float:
@@ -169,22 +172,39 @@ def _merge_videos(old: list[dict], new: list[dict]) -> list[dict]:
     return list(merged.values())
 
 def refresh_cache_background() -> dict:
-    existing = load_cache()
-    videos = existing.get("videos", [])
+    raw_ydl = asyncio.run(search_ohio_police_videos(max_per_query=25, pages=1))
+    raw_api = _search_recent_ohio_videos_api(max_results=50)
     
-    missing_ids = [v["id"] for v in videos if v.get("id") and not v.get("upload_date")]
+    raw = raw_ydl + raw_api
+    seen = set()
+    deduped = []
+    for v in raw:
+        vid_id = v.get("id")
+        if vid_id and vid_id not in seen:
+            seen.add(vid_id)
+            deduped.append(v)
+
+    scored = [_score_video(v) for v in deduped]
+    filtered = _filter_scored(scored, min_confidence=15.0, require_cam=False)
+
+    missing_ids = [v["id"] for v in filtered if v.get("id") and not v.get("upload_date")][:20]
     if missing_ids:
         meta = enrich_videos_metadata(missing_ids)
-        for v in videos:
+        for v in filtered:
             vid_id = v.get("id")
             if vid_id and vid_id in meta:
                 v.update(meta[vid_id])
-    
+
+    existing = load_cache()
+    merged = _merge_videos(existing.get("videos", []), filtered)
+    merged.sort(key=lambda x: x.get("confidence", 0), reverse=True)
+
     data = {
-        "videos": videos,
+        "videos": merged,
         "updated_at": _now(),
     }
     save_cache(data)
+    logger.info(f"Cache refreshed: {len(merged)} videos")
     return data
 
 def get_cached_videos(
@@ -225,7 +245,7 @@ def get_cached_videos(
         "updated_at": data.get("updated_at", 0.0),
     }
 
-def search_youtube(query: str, max_results: int = 20) -> list[dict]:
+def search_youtube(query: str, max_results: int = 20, pages: int = 1) -> list[dict]:
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
@@ -236,6 +256,7 @@ def search_youtube(query: str, max_results: int = 20) -> list[dict]:
     }
     
     results = []
+    seen_ids = set()
     search_query = f"ytsearch{max_results}:{query}"
     
     try:
@@ -244,21 +265,150 @@ def search_youtube(query: str, max_results: int = 20) -> list[dict]:
             if info and "entries" in info:
                 for entry in info["entries"]:
                     if entry:
-                        results.append({
-                            "id": entry.get("id"),
-                            "title": entry.get("title", ""),
-                            "channel": entry.get("channel", "") or entry.get("uploader", ""),
-                            "url": entry.get("webpage_url", f"https://www.youtube.com/watch?v={entry.get('id')}"),
-                            "thumbnail": entry.get("thumbnail") or (f"https://i.ytimg.com/vi/{entry.get('id')}/hqdefault.jpg" if entry.get("id") else None),
-                            "duration": entry.get("duration"),
-                            "view_count": entry.get("view_count"),
-                            "upload_date": entry.get("upload_date"),
-                            "description": entry.get("description", "") or "",
-                        })
+                        vid_id = entry.get("id")
+                        if vid_id and vid_id not in seen_ids:
+                            seen_ids.add(vid_id)
+                            results.append({
+                                "id": vid_id,
+                                "title": entry.get("title", ""),
+                                "channel": entry.get("channel", "") or entry.get("uploader", ""),
+                                "url": entry.get("webpage_url", f"https://www.youtube.com/watch?v={vid_id}"),
+                                "thumbnail": entry.get("thumbnail") or (f"https://i.ytimg.com/vi/{vid_id}/hqdefault.jpg" if vid_id else None),
+                                "duration": entry.get("duration"),
+                                "view_count": entry.get("view_count"),
+                                "upload_date": entry.get("upload_date"),
+                                "description": entry.get("description", "") or "",
+                            })
     except Exception as e:
-        print(f"Search error for '{query}': {e}")
+        logger.error(f"Search error for '{query}': {e}")
     
     return results
+
+def search_youtube_api(query: str, max_results: int = 20, order: str = "date") -> list[dict]:
+    api_key = os.environ.get("YOUTUBE_API_KEY")
+    if not api_key:
+        return []
+    
+    search_url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&q={urllib.parse.quote(query)}&type=video&order={order}&maxResults={max_results}&key={api_key}"
+    
+    results = []
+    video_ids = []
+    try:
+        req = urllib.request.Request(search_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        
+        for item in data.get("items", []):
+            vid_id = item.get("id", {}).get("videoId")
+            if not vid_id:
+                continue
+            video_ids.append(vid_id)
+            snippet = item.get("snippet", {})
+            published_at = snippet.get("publishedAt", "")
+            upload_date = published_at.split("T")[0] if published_at else None
+            results.append({
+                "id": vid_id,
+                "title": snippet.get("title", ""),
+                "channel": snippet.get("channelTitle", ""),
+                "url": f"https://www.youtube.com/watch?v={vid_id}",
+                "thumbnail": snippet.get("thumbnails", {}).get("high", {}).get("url") or snippet.get("thumbnails", {}).get("default", {}).get("url"),
+                "upload_date": upload_date,
+                "description": snippet.get("description", ""),
+            })
+    except Exception as e:
+        logger.error(f"YouTube API search error for '{query}': {e}")
+        return results
+    
+    if not video_ids:
+        return results
+    
+    stats_map = _fetch_youtube_video_stats(video_ids, api_key)
+    for v in results:
+        vid_id = v.get("id")
+        if vid_id in stats_map:
+            v.update(stats_map[vid_id])
+    
+    return results
+
+def _fetch_youtube_video_stats(video_ids: list[str], api_key: str) -> dict[str, dict]:
+    if not video_ids or not api_key:
+        return {}
+    
+    id_map = {}
+    batch_size = 50
+    for i in range(0, len(video_ids), batch_size):
+        batch = video_ids[i:i + batch_size]
+        ids_param = ",".join(batch)
+        url = f"https://www.googleapis.com/youtube/v3/videos?part=statistics,contentDetails&id={ids_param}&key={api_key}"
+        
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            
+            for item in data.get("items", []):
+                vid_id = item.get("id")
+                stats = item.get("statistics", {})
+                content = item.get("contentDetails", {})
+                view_count = stats.get("viewCount")
+                if view_count is not None:
+                    try:
+                        view_count = int(view_count)
+                    except (TypeError, ValueError):
+                        view_count = None
+                duration_str = content.get("duration", "")
+                duration = _parse_iso8601_duration(duration_str) if duration_str else None
+                id_map[vid_id] = {
+                    "view_count": view_count,
+                    "duration": duration,
+                }
+        except Exception as e:
+            logger.error(f"YouTube API stats error: {e}")
+    
+    return id_map
+
+def _parse_iso8601_duration(duration: str) -> int:
+    import re
+    pattern = re.compile(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?')
+    m = pattern.match(duration)
+    if not m:
+        return None
+    hours = int(m.group(1) or 0)
+    minutes = int(m.group(2) or 0)
+    seconds = int(m.group(3) or 0)
+    return hours * 3600 + minutes * 60 + seconds
+
+RECENT_OHIO_QUERIES = [
+    "Ohio police body cam",
+    "Ohio police dash cam",
+    "Ohio bodycam",
+    "Ohio dashcam",
+    "OSHP body cam",
+    "OSHP dash cam",
+    "Columbus police body cam",
+    "Cleveland police body cam",
+    "Cincinnati police body cam",
+    "Ohio police arrest",
+    "Ohio police traffic stop",
+    "Ohio law enforcement body cam",
+    "Ohio sheriff body cam",
+    "Ohio police footage",
+    "body cam Ohio 2025",
+    "dash cam Ohio 2025",
+    "body cam Ohio 2026",
+    "dash cam Ohio 2026",
+]
+
+def _search_recent_ohio_videos_api(max_results: int = 50) -> list[dict]:
+    all_videos = {}
+    for query in RECENT_OHIO_QUERIES:
+        results = search_youtube_api(query, max_results=max_results, order="date")
+        logger.info(f"API query '{query}' returned {len(results)} results")
+        for v in results:
+            vid_id = v.get("id")
+            if vid_id and vid_id not in all_videos:
+                all_videos[vid_id] = v
+    return list(all_videos.values())
 
 def score_video(video: dict) -> dict:
     ohio_score, cam_score, reason, matched_cities = calculate_ohio_confidence(video)
@@ -301,10 +451,10 @@ def sort_videos(videos: list[dict], sort_by: str = "confidence") -> list[dict]:
         sorted_videos.sort(key=lambda x: x.get("confidence", 0), reverse=True)
     return sorted_videos
 
-async def search_ohio_police_videos(max_per_query: int = 15) -> list[dict]:
+async def search_ohio_police_videos(max_per_query: int = 15, pages: int = 2) -> list[dict]:
     loop = asyncio.get_event_loop()
     tasks = [
-        loop.run_in_executor(None, search_youtube, query, max_per_query)
+        loop.run_in_executor(None, search_youtube, query, max_per_query, pages)
         for query in DEFAULT_QUERIES
     ]
     results_lists = await asyncio.gather(*tasks, return_exceptions=True)
@@ -312,6 +462,7 @@ async def search_ohio_police_videos(max_per_query: int = 15) -> list[dict]:
     all_videos = {}
     for results in results_lists:
         if isinstance(results, Exception):
+            logger.error(f"Query failed: {results}")
             continue
         for v in results:
             vid_id = v.get("id")
@@ -323,9 +474,9 @@ async def search_ohio_police_videos(max_per_query: int = 15) -> list[dict]:
     
     return filtered
 
-async def search_custom(query: str, max_results: int = 20, min_confidence: float = 40.0, require_cam: bool = True, sort_by: str = "confidence") -> list[dict]:
+async def search_custom(query: str, max_results: int = 20, min_confidence: float = 40.0, require_cam: bool = True, sort_by: str = "confidence", pages: int = 1) -> list[dict]:
     loop = asyncio.get_event_loop()
-    results = await loop.run_in_executor(None, search_youtube, query, max_results)
+    results = await loop.run_in_executor(None, search_youtube, query, max_results, pages)
     filtered = filter_ohio_videos(results, min_confidence=min_confidence, require_cam=require_cam)
     return sort_videos(filtered, sort_by=sort_by)
 
@@ -364,8 +515,8 @@ def enrich_videos_metadata(video_ids: list[str]) -> dict[str, dict]:
                 "upload_date": upload_date,
                 "description": description,
             }
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"HTML enrichment failed for {vid_id}: {e}")
     
     return id_map
 
@@ -400,6 +551,6 @@ def _enrich_with_youtube_api(video_ids: list[str], api_key: str) -> dict[str, di
                     "description": description,
                 }
         except Exception as e:
-            print(f"YouTube API enrichment error: {e}")
+            logger.error(f"YouTube API enrichment error: {e}")
     
     return id_map

@@ -7,10 +7,14 @@ import asyncio
 import threading
 import time
 import re
+import logging
 from typing import Optional
 from pydantic import BaseModel
 
 from scraper import search_ohio_police_videos, search_custom, enrich_videos_metadata, refresh_cache_background, get_cached_videos, load_cache, CACHE_TTL_SECONDS
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="PatrolTube")
 
@@ -121,8 +125,8 @@ def _start_cache_refresh_thread():
             time.sleep(CACHE_TTL_SECONDS)
             try:
                 refresh_cache_background()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(f"Background cache refresh failed: {e}")
     t = threading.Thread(target=worker, daemon=True)
     t.start()
 

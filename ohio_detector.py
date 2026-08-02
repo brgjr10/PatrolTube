@@ -2,32 +2,38 @@ import re
 from typing import Optional
 
 KNOWN_OHIO_CITIES = [
-    "Columbus", "Cleveland", "Cincinnati", "Toledo", "Akron", "Dayton",
-    "Parma", "Canton", "Youngstown", "Lorain", "Hamilton", "Springfield",
-    "Kettering", "Fairfield", "Miamisburg", "Beavercreek", "Huber Heights",
-    "Moraine", "Xenia", "Oxford", "Athens", "Marietta", "Steubenville",
-    "Zanesville", "Lima", "Sandusky", "Mansfield", "Newark", "Portsmouth",
-    "Chillicothe", "Marion", "Findlay", "Lancaster", "Hilliard", "Dublin",
-    "Reynoldsburg", "Grove City", "Westerville", "Upper Arlington", "Worthington",
-    "Gahanna", "Pickerington", "Elyria", "Lakewood", "Euclid", "Cleveland Heights",
-    "Cuyahoga Falls", "Middletown", "Huber Heights", "Bridgetown", "Forest Park",
-    "Fairborn", "Centerville", "Miamisburg", "Trotwood", "Riverside", "Sharonville",
-    "Springdale", "Monroe", "Lebanon", "Oregon", "Sylvania", "Maumee",
-    "Bowling Green", "Port Clinton", "Lorain", "Avon", "Avon Lake", "North Ridgeville",
-    "Westlake", "Rocky River", "Parma Heights", "Broadview Heights", "Seven Hills",
-    "North Olmsted", "Olmsted Falls", "Bay Village"
+    "Akron", "Athens", "Avon", "Avon Lake", "Bay Village", "Beavercreek", 
+    "Bowling Green", "Broadview Heights", "Canton", "Centerville", "Chillicothe", 
+    "Cincinnati", "Cleveland", "Cleveland Heights", "Columbus", "Cuyahoga Falls", 
+    "Dayton", "Dublin", "Elyria", "Euclid", "Fairborn", "Fairfield", "Findlay", 
+    "Forest Park", "Gahanna", "Grove City", "Hamilton", "Harrison", "Hilliard", 
+    "Huber Heights", "Kettering", "Lakewood", "Lancaster", "Lebanon", "Lima", 
+    "Lorain", "Mansfield", "Marietta", "Marion", "Maumee", "Miamisburg", 
+    "Middletown", "Monroe", "Moraine", "Newark", "North Ridgeville", 
+    "North Olmsted", "Olmsted Falls", "Oregon", "Oxford", "Parma", 
+    "Parma Heights", "Pickerington", "Port Clinton", "Portsmouth", "Reynoldsburg", 
+    "Riverside", "Rocky River", "Sandusky", "Seven Hills", "Sharonville", 
+    "Springdale", "Springfield", "Steubenville", "Sylvania", "Toledo", "Trotwood", 
+    "Upper Arlington", "Westlake", "Westerville", "Worthington", "Xenia", 
+    "Youngstown", "Zanesville"
 ]
 
 KNOWN_OHIO_COUNTIES = [
-    "Franklin", "Cuyahoga", "Hamilton", "Summit", "Montgomery", "Lucas", "Stark",
-    "Butler", "Lorain", "Mahoning", "Clermont", "Warren", "Trumbull", "Ross",
-    "Licking", "Delaware", "Fairfield", "Clark", "Wood", "Sandusky",
-    "Erie", "Muskingum", "Morrow", "Marion", "Hardin", "Hancock", "Putnam",
-    "Van Wert", "Auglaize", "Shelby", "Logan", "Champaign", "Madison", "Union",
-    "Fayette", "Pickaway", "Pike", "Jackson", "Vinton",
-    "Athens", "Meigs", "Washington", "Monroe", "Belmont", "Noble", "Morgan",
-    "Perry", "Hocking", "Clinton", "Brown",
-    "Adams", "Scioto", "Lawrence", "Gallia"
+    "Adams", "Allen", "Ashland", "Ashtabula", "Athens", "Auglaize", 
+    "Belmont", "Brown", "Butler", "Carroll", "Champaign", "Clark", 
+    "Clermont", "Clinton", "Columbiana", "Coshocton", "Crawford", "Cuyahoga", 
+    "Darke", "Defiance", "Delaware", "Erie", "Fairfield", "Fayette", 
+    "Franklin", "Fulton", "Gallia", "Geauga", "Greene", "Guernsey", 
+    "Hamilton", "Hancock", "Hardin", "Harrison", "Henry", "Highland", 
+    "Hocking", "Holmes", "Huron", "Jackson", "Jefferson", "Knox", 
+    "Lake", "Lawrence", "Licking", "Logan", "Lorain", "Lucas", 
+    "Madison", "Mahoning", "Marion", "Medina", "Meigs", "Mercer", 
+    "Miami", "Monroe", "Montgomery", "Morgan", "Morrow", "Muskingum", 
+    "Noble", "Ottawa", "Paulding", "Perry", "Pickaway", "Pike", 
+    "Portage", "Preble", "Putnam", "Richland", "Ross", "Sandusky", 
+    "Scioto", "Seneca", "Shelby", "Stark", "Summit", "Trumbull", 
+    "Tuscarawas", "Union", "Van Wert", "Vinton", "Warren", "Washington", 
+    "Wayne", "Williams", "Wood", "Wyandot"
 ]
 
 KNOWN_STATE_AGENCIES = [
