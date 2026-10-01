@@ -4,11 +4,26 @@ services:
   police-video-app:
     build: .
     container_name: police-video-app
+    # No `user:` override on purpose. A compose-level `user:` replaces the
+    # image's USER directive, so the old "${PATROLTUBE_UID:-0}" default made
+    # `docker compose up` run as root and silently no-op'd Dockerfile:23. The
+    # root default existed only because the ./data bind mount carried host
+    # ownership; the named volume below is created by the image's own uid
+    # 10001, so USER appuser works unmodified. PATROLTUBE-010.
     ports:
       - "8001:8000"
     environment:
       - TZ=America/New_York
       - YOUTUBE_API_KEY=${YOUTUBE_API_KEY}
+      - CACHE_REFRESH_TOKEN=${CACHE_REFRESH_TOKEN}
+      - CORS_ORIGINS=${CORS_ORIGINS}
     volumes:
-      - ./data:/app/data
+      # Named, not a bind mount: Docker creates it from the image's /app/data,
+      # which is owned by appuser. A bind mount brought the host's uid/gid with
+      # it, which is what forced the root default above. Cache the volume if you
+      # want the data to outlive `docker compose down -v`.
+      - patroltube-data:/app/data
     restart: unless-stopped
+
+volumes:
+  patroltube-data:

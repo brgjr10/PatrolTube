@@ -1,0 +1,29 @@
+.git
+.gitignore
+.env
+.env.*
+data/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+node_modules/
+tests/
+.qa-tmp/
+project.json
+cache.json
+*.old
+Thumbs.db
+.DS_Store
+
+# TLS material. The image serves plain HTTP and never reads a certificate, but
+# COPY . . would otherwise bake a developer's private key into a layer.
+# A secret in a layer cannot be removed by editing the source afterwards.
+*.pem
+*.key
+*.crt
+*.pfx
+*.p12
+*.jks
+*.keystore
