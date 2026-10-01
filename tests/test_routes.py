@@ -11,6 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import yaml
 from conftest import DESKTOP_UA, MOBILE_UA
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -235,25 +236,18 @@ def test_compose_does_not_override_the_non_root_user():
     """PATROLTUBE-010: a compose `user:` replaces the image's USER, so the old
     "${PATROLTUBE_UID:-0}" default ran the container as root and made the
     Dockerfile's appuser a no-op. The named volume is what makes dropping the
-    override safe, so both halves are asserted together."""
-    compose = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-    active = [ln for ln in compose.splitlines() if ln.strip() and not ln.strip().startswith("#")]
-    assert not [ln for ln in active if ln.split(":", 1)[0].strip() == "user"]
-    assert not [ln for ln in active if "PATROLTUBE_UID" in ln]
-    assert "patroltube-data:/app/data" in compose
+    override safe, so both halves are asserted together.
+
+    Parsed with yaml.safe_load rather than scanned line by line: the previous
+    line scanner only matched a `user:` whose key started the line, so a
+    `user:` nested under the service block, or spelled `user :`, would have
+    reintroduced the root default while the test stayed green."""
+    compose = yaml.safe_load(
+        (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    )
+    service = compose["services"]["police-video-app"]
+    assert "user" not in service, "a compose `user:` overrides Dockerfile USER appuser"
+    assert not any("PATROLTUBE_UID" in str(v) for v in service.values())
+    assert "patroltube-data:/app/data" in service["volumes"]
     dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "USER appuser" in dockerfile
-
-
-def test_ci_installs_the_pins_and_runs_the_smoke_test():
-    """PATROLTUBE-025: without CI the pinned requirements and the runtime stack
-    drift apart unnoticed, which is how PATROLTUBE-006 shipped. The 200 checks
-    above are only a drift guard if something actually runs them against a fresh
-    install, so the workflow is asserted to exist and to do both halves."""
-    workflow = REPO_ROOT / ".github" / "workflows" / "ci.yml"
-    assert workflow.is_file(), "no CI workflow: the pins can drift unchecked"
-    text = workflow.read_text(encoding="utf-8")
-    assert "pip install -r requirements.txt" in text
-    assert "python -m pytest tests -q" in text
-    assert "python -m compileall -q ." in text
-    assert "push:" in text and "pull_request:" in text

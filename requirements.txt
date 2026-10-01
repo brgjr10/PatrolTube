@@ -12,3 +12,8 @@ jinja2==3.1.6
 # Test-only, installed by CI and by developers running the suite.
 pytest==9.1.1
 httpx==0.28.1
+
+# Test-only. tests/test_routes.py parses docker-compose.yml with yaml.safe_load
+# so a nested `user:` key cannot slip past the non-root assertion. Without this
+# pin CI's install step leaves the test module unimportable.
+pyyaml==6.0.3
