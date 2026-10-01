@@ -239,9 +239,12 @@ def test_compose_does_not_override_the_non_root_user():
     override safe, so both halves are asserted together.
 
     Parsed with yaml.safe_load rather than scanned line by line: the previous
-    line scanner only matched a `user:` whose key started the line, so a
-    `user:` nested under the service block, or spelled `user :`, would have
-    reintroduced the root default while the test stayed green."""
+    line scanner compared the text before the first ':' to the literal string
+    'user', so a quoted key ("user": "0:0") -- which is how a templated or
+    YAML-serialised override can easily be written -- was invisible to it and
+    would have reintroduced the root default with the test still green.
+    (A merely indented or spaced-out key was already caught; the quoting is
+    the case the scanner missed.)"""
     compose = yaml.safe_load(
         (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     )
