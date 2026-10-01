@@ -1,5 +1,4 @@
 import re
-from typing import Optional
 
 KNOWN_OHIO_CITIES = [
     "Akron", "Alliance", "Amherst", "Ashland", "Ashtabula", "Athens", "Aurora", 
@@ -93,11 +92,62 @@ GENERIC_POLICE_KEYWORDS = [
     "officer footage", "police video", "deputy footage", "sheriff footage"
 ]
 
+# Ohio shares a county and a city name with nearly every other state, so a bare
+# substring match confidently attributed "Madison County, Wisconsin" to Ohio
+# with a numeric percentage the UI presents as authoritative. A state named in
+# the same phrase as the county ("<county> county, <state>") therefore wins over
+# the county list. The guard is deliberately phrase-scoped: these blobs are long
+# news descriptions that mention unrelated states in passing, and a whole-text
+# scan threw away genuine Ohio footage. PATROLTUBE-014.
+NON_OHIO_STATES = [
+    "Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado",
+    "Connecticut", "Delaware", "Florida", "Georgia", "Hawaii", "Idaho",
+    "Illinois", "Indiana", "Iowa", "Kansas", "Kentucky", "Louisiana", "Maine",
+    "Maryland", "Massachusetts", "Michigan", "Minnesota", "Mississippi",
+    "Missouri", "Montana", "Nebraska", "Nevada", "New Hampshire", "New Jersey",
+    "New Mexico", "New York", "North Carolina", "North Dakota", "Oklahoma",
+    "Oregon", "Pennsylvania", "Rhode Island", "South Carolina", "South Dakota",
+    "Tennessee", "Texas", "Utah", "Vermont", "Virginia", "Washington",
+    "West Virginia", "Wisconsin", "Wyoming", "District of Columbia"
+]
+NON_OHIO_STATE_ALT = "|".join(NON_OHIO_STATES)
+
+# "OH" only abbreviates Ohio when it is written the way a state abbreviation is
+# written — caps, or in an address ("Springfield, OH", "OH 43115"). A lowercase
+# standalone "oh" is the interjection, which is why is_ohio_location("oh")
+# returned True.
+OH_ABBREVIATION_RE = re.compile(r",\s*oh\b|\boh\s+\d{5}\b", re.I)
+OH_ABBREVIATION_CAPS_RE = re.compile(r"\bOH\b")
+
+
+def _is_ohio_abbreviation(text: str) -> bool:
+    return bool(OH_ABBREVIATION_RE.search(text) or OH_ABBREVIATION_CAPS_RE.search(text))
+
+# "Ohio" plus any of these used to be a bare substring test, so "pd" matched
+# "updated" and "rapid" and handed +70 to unrelated footage.
+OHIO_ENTITY_KEYWORDS_RE = re.compile(r"\b(police|sheriff|department|pd|sheriff's office)\b")
+
+_PLACE_STATE_PATTERNS: dict[str, re.Pattern] = {}
+
+
+def _place_belongs_to_another_state(text_lower: str, place: str) -> bool:
+    pattern = _PLACE_STATE_PATTERNS.get(place)
+    if pattern is None:
+        pattern = re.compile(
+            re.escape(place) + r"[,\s]+(?:county[,\s]+)?(?:" + NON_OHIO_STATE_ALT + r")\b",
+            re.I,
+        )
+        _PLACE_STATE_PATTERNS[place] = pattern
+    return bool(pattern.search(text_lower))
+
 def find_matched_ohio_cities(text: str) -> list[str]:
     text_lower = text.lower()
     matched = []
     for city in KNOWN_OHIO_CITIES:
-        if city.lower() in text_lower:
+        city_lower = city.lower()
+        if city_lower not in text_lower:
+            continue
+        if not _place_belongs_to_another_state(text_lower, city_lower):
             matched.append(city)
     return matched
 
@@ -105,16 +155,21 @@ def is_ohio_location(text: str) -> bool:
     text_lower = text.lower()
     # Check cities
     for city in KNOWN_OHIO_CITIES:
-        if city.lower() in text_lower:
+        city_lower = city.lower()
+        if city_lower in text_lower and not _place_belongs_to_another_state(text_lower, city_lower):
             return True
     # Check counties with "County"
+    has_county = "county" in text_lower
     for county in KNOWN_OHIO_COUNTIES:
-        if county.lower() in text_lower and "county" in text_lower:
-            return True
-        if f"{county.lower()} county" in text_lower:
+        county_lower = county.lower()
+        if county_lower not in text_lower:
+            continue
+        if _place_belongs_to_another_state(text_lower, county_lower):
+            continue
+        if has_county or f"{county_lower} county" in text_lower:
             return True
     # Direct Ohio references
-    if re.search(r'\boh\b', text_lower):
+    if _is_ohio_abbreviation(text):
         return True
     if "ohio" in text_lower:
         return True
@@ -126,17 +181,21 @@ def is_ohio_police_entity(text: str) -> bool:
         if agency.lower() in text_lower:
             return True
     # Check for "Ohio" + police/sheriff/department patterns
-    if "ohio" in text_lower and any(k in text_lower for k in ["police", "sheriff", "department", "pd", "sheriff's office"]):
+    if "ohio" in text_lower and OHIO_ENTITY_KEYWORDS_RE.search(text_lower):
         return True
     # Check for city + police/sheriff for known Ohio cities
     for city in KNOWN_OHIO_CITIES:
-        pattern = f"{city.lower()} (police|sheriff|department|pd|office)"
-        if re.search(pattern, text_lower):
+        city_lower = city.lower()
+        if not re.search(f"{city_lower} (county )?(police|sheriff|department|pd|office)", text_lower):
+            continue
+        if not _place_belongs_to_another_state(text_lower, city_lower):
             return True
     # Check for Ohio counties with sheriff
     for county in KNOWN_OHIO_COUNTIES:
-        pattern = f"{county.lower()} (county )?(sheriff|police|department|highway|hp)"
-        if re.search(pattern, text_lower):
+        county_lower = county.lower()
+        if not re.search(f"{county_lower} (county )?(sheriff|police|department|highway|hp)", text_lower):
+            continue
+        if not _place_belongs_to_another_state(text_lower, county_lower):
             return True
     return False
 
@@ -182,7 +241,7 @@ def calculate_ohio_confidence(video: dict) -> tuple[float, float, str, list[str]
         reasons.append("Ohio location identified")
     
     # Weak but supportive
-    if "ohio" in combined.lower() or re.search(r'\boh\b', combined.lower()):
+    if "ohio" in combined.lower() or _is_ohio_abbreviation(combined):
         ohio_score += 15
         reasons.append("Ohio reference found")
     
@@ -190,10 +249,8 @@ def calculate_ohio_confidence(video: dict) -> tuple[float, float, str, list[str]
     
     # Cap at 100 and also evaluate body cam/dash cam presence
     cam_score = 0.0
-    cam_reasons = []
-    
+
     if is_body_cam_or_dash_cam(combined):
         cam_score = 100.0
-        cam_reasons.append("Body cam or dash cam content detected")
-    
+
     return ohio_score, cam_score, "; ".join(reasons), matched_cities

@@ -19,8 +19,8 @@
     </div>
     <div class="top-row">
       <div class="search-row">
-        <input type="text" id="searchInput" placeholder="Search Ohio police videos..." />
-        <select id="sortBy">
+        <input type="text" id="searchInput" placeholder="Search Ohio police videos..." aria-label="Search videos" />
+        <select id="sortBy" aria-label="Sort videos by">
           <option value="confidence">Relevance</option>
           <option value="upload_date_desc">Newest</option>
           <option value="upload_date_asc">Oldest</option>
@@ -161,6 +161,80 @@
       return sorted;
     }
 
+    // Remote YouTube metadata is untrusted. Building cards from textContent and
+    // explicit elements keeps a hostile title/channel out of the HTML parser,
+    // which is what let PATROLTUBE-001 execute.
+    function safeVideoUrl(url, id) {
+      const ytId = (id || '').match(/^[A-Za-z0-9_-]{11}$/);
+      if (ytId) return 'https://www.youtube.com/watch?v=' + ytId;
+      if (typeof url === 'string' && /^https:\/\/(www\.)?youtube\.com\/watch\?v=[A-Za-z0-9_-]{11}/.test(url)) return url;
+      return null;
+    }
+
+    function buildVideoCard(v) {
+      const card = document.createElement('div');
+      card.className = 'video-card';
+      const href = safeVideoUrl(v.url, v.id);
+      const titleText = v.title || 'Untitled video';
+
+      const thumbLink = document.createElement('a');
+      if (href) thumbLink.href = href;
+      thumbLink.target = '_blank';
+      thumbLink.rel = 'noopener noreferrer';
+      thumbLink.className = 'thumb';
+      const thumb = document.createElement('img');
+      thumb.src = (typeof v.thumbnail === 'string' && /^https:\/\/i\.ytimg\.com\//.test(v.thumbnail)) ? v.thumbnail : '';
+      thumb.alt = titleText;
+      thumb.loading = 'lazy';
+      thumbLink.appendChild(thumb);
+      const duration = document.createElement('span');
+      duration.className = 'duration';
+      duration.textContent = formatDuration(v.duration);
+      thumbLink.appendChild(duration);
+      card.appendChild(thumbLink);
+
+      const body = document.createElement('div');
+      body.className = 'body';
+
+      const titleLink = document.createElement('a');
+      if (href) titleLink.href = href;
+      titleLink.target = '_blank';
+      titleLink.rel = 'noopener noreferrer';
+      titleLink.className = 'title';
+      titleLink.textContent = titleText;
+      body.appendChild(titleLink);
+
+      const channel = document.createElement('div');
+      channel.className = 'channel';
+      channel.textContent = v.channel || 'Unknown channel';
+      body.appendChild(channel);
+
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      const badge = document.createElement('span');
+      badge.className = 'score-badge ' + scoreClass(v.confidence);
+      badge.textContent = v.confidence + '% match';
+      meta.appendChild(badge);
+      const addTag = (text) => {
+        const tag = document.createElement('span');
+        tag.className = 'tag';
+        tag.textContent = text;
+        meta.appendChild(tag);
+      };
+      (Array.isArray(v.matched_cities) ? v.matched_cities : []).forEach(addTag);
+      if (v.cam_score > 0) addTag('Body/Dash Cam');
+      if (v.ohio_score > 0) addTag('Ohio PD (' + v.ohio_score + '%)');
+      body.appendChild(meta);
+
+      const sub = document.createElement('div');
+      sub.className = 'sub';
+      sub.textContent = [formatViews(v.view_count), formatUploadDate(v)].filter(Boolean).join(' · ');
+      body.appendChild(sub);
+
+      card.appendChild(body);
+      return card;
+    }
+
     function renderVideos(videos, append = false) {
       if (!append) {
         lastVideos = videos;
@@ -176,28 +250,9 @@
       const source = append ? videos : lastVideos;
       const sorted = sortVideos(source, sortBy.value);
 
-      sorted.forEach(v => {
-        const card = document.createElement('div');
-        card.className = 'video-card';
-        card.innerHTML = `
-          <a href="${v.url}" target="_blank" class="thumb">
-            <img src="${v.thumbnail || ''}" alt="" loading="lazy" />
-            <span class="duration">${formatDuration(v.duration)}</span>
-          </a>
-          <div class="body">
-            <a href="${v.url}" target="_blank" class="title">${v.title}</a>
-            <div class="channel">${v.channel || 'Unknown channel'}</div>
-            <div class="meta">
-              <span class="score-badge ${scoreClass(v.confidence)}">${v.confidence}% match</span>
-              ${v.matched_cities && v.matched_cities.length ? v.matched_cities.map(c => `<span class="tag">${c}</span>`).join('') : ''}
-              ${v.cam_score > 0 ? '<span class="tag">Body/Dash Cam</span>' : ''}
-              ${v.ohio_score > 0 ? `<span class="tag">Ohio PD (${v.ohio_score}%)</span>` : ''}
-            </div>
-            <div class="sub">${formatViews(v.view_count)} ${formatUploadDate(v) ? '· ' + formatUploadDate(v) : ''}</div>
-          </div>
-        `;
-        videoList.appendChild(card);
-      });
+      const frag = document.createDocumentFragment();
+      sorted.forEach(v => frag.appendChild(buildVideoCard(v)));
+      videoList.appendChild(frag);
     }
 
     async function loadMoreVideos() {

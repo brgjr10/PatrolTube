@@ -7,6 +7,7 @@ import time
 import threading
 import logging
 import urllib.parse
+import urllib.request
 from typing import Optional, Dict, List
 from ohio_detector import calculate_ohio_confidence, is_body_cam_or_dash_cam
 
@@ -107,29 +108,46 @@ DEFAULT_QUERIES = [
 def _now() -> float:
     return time.time()
 
+# Last copy that parsed cleanly, so a corrupt read degrades to slightly stale
+# data rather than reporting zero videos to every visitor (PATROLTUBE-004).
+_LAST_GOOD_CACHE: dict = {"videos": [], "updated_at": 0.0}
+
 def load_cache() -> dict:
+    global _LAST_GOOD_CACHE
     os.makedirs(os.path.dirname(CACHE_PATH), exist_ok=True)
     if not os.path.exists(CACHE_PATH):
-        return {"videos": [], "updated_at": 0.0}
+        return dict(_LAST_GOOD_CACHE)
     try:
         with open(CACHE_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
         if not isinstance(data, dict):
-            return {"videos": [], "updated_at": 0.0}
+            raise ValueError(f"cache root is {type(data).__name__}, expected dict")
         data.setdefault("videos", [])
         data.setdefault("updated_at", 0.0)
+        _LAST_GOOD_CACHE = data
         return data
-    except Exception:
-        return {"videos": [], "updated_at": 0.0}
+    except (json.JSONDecodeError, ValueError) as e:
+        # Corruption is never "no data" — serving empty here would let the next
+        # refresh _merge against an empty list and truncate the cache for good.
+        logger.error(f"Cache at {CACHE_PATH} is unreadable ({e}). Serving the last good in-memory copy ({len(_LAST_GOOD_CACHE.get('videos', []))} videos). Fix: delete the file and let the next refresh rebuild it.")
+    except OSError as e:
+        logger.error(f"Cache at {CACHE_PATH} could not be read ({e}). Serving the last good in-memory copy ({len(_LAST_GOOD_CACHE.get('videos', []))} videos). Fix: check permissions on the data directory.")
+    return dict(_LAST_GOOD_CACHE)
 
 def save_cache(data: dict) -> None:
     os.makedirs(os.path.dirname(CACHE_PATH), exist_ok=True)
     with CACHE_LOCK:
+        tmp_path = CACHE_PATH + ".tmp"
         try:
-            with open(CACHE_PATH, "w", encoding="utf-8") as f:
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            # os.replace is atomic on POSIX and Windows, so a concurrent reader
+            # sees either the old file or the new one, never a truncated write.
+            os.replace(tmp_path, CACHE_PATH)
         except Exception as e:
-            print(f"Cache save error: {e}")
+            logger.error(f"Cache save error: {e}. Fix: check disk space and write permissions on {os.path.dirname(CACHE_PATH)}")
 
 def _score_video(video: dict) -> dict:
     ohio_score, cam_score, reason, matched_cities = calculate_ohio_confidence(video)
@@ -219,6 +237,25 @@ def refresh_cache_background() -> dict:
     logger.info(f"Cache refreshed (api): {len(merged)} videos")
     return data
 
+# get_cached_videos used to re-parse 3.5 MB and re-score all 4446 records on
+# every request; the scores are already persisted, so memoize on the file mtime
+# and let the scoring pass run only when the cache actually changes (PATROLTUBE-012).
+_SCORED_MEMO: dict = {"mtime": None, "videos": []}
+
+def _scored_cache_videos(data: dict) -> list[dict]:
+    try:
+        mtime = os.path.getmtime(CACHE_PATH)
+    except OSError:
+        mtime = None
+    if mtime is not None and _SCORED_MEMO["mtime"] == mtime:
+        return _SCORED_MEMO["videos"]
+    videos = data.get("videos", [])
+    scored = [_score_video(v) for v in videos]
+    if mtime is not None:
+        _SCORED_MEMO["mtime"] = mtime
+        _SCORED_MEMO["videos"] = scored
+    return scored
+
 def get_cached_videos(
     query: str = "",
     min_confidence: float = 40.0,
@@ -228,10 +265,13 @@ def get_cached_videos(
     offset: int = 0,
 ) -> dict:
     data = load_cache()
-    videos = data.get("videos", [])
-    
-    scored = [_score_video(v) for v in videos]
-    filtered = _filter_scored(scored, min_confidence=min_confidence, require_cam=require_cam)
+    # Clamp here as well as at the route: a negative slice bound silently drops
+    # the tail of the list rather than erroring (PATROLTUBE-008).
+    max_results = max(1, min(int(max_results), 200))
+    offset = max(0, int(offset))
+
+    scored = _scored_cache_videos(data)
+    filtered = _filter_scored(list(scored), min_confidence=min_confidence, require_cam=require_cam)
     
     query_lower = (query or "").strip().lower()
     if query_lower:
@@ -535,20 +575,18 @@ def enrich_videos_metadata(video_ids: list[str]) -> dict[str, dict]:
     id_map = {}
     for vid_id in video_ids:
         try:
-            import urllib.request
             url = f"https://www.youtube.com/watch?v={vid_id}"
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=15) as resp:
                 html = resp.read().decode("utf-8", errors="ignore")
-            
+
             upload_date = None
             m = re.search(r'"uploadDate"\s*:\s*"([^"]+)"', html)
             if m:
                 upload_date = m.group(1)
-            else:
-                m = re.search(r'\b(20\d{2})(\d{2})(\d{2})\b', html)
-                if m:
-                    upload_date = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+            # A deleted or non-existent id still returns a 200 page, and any bare
+            # YYYYMMDD on it is page furniture rather than this video's date.
+            # Guessing here wrote today's date onto every bad id (PATROLTUBE-007).
             
             description = ""
             m = re.search(r'"description"\s*:\s*"((?:[^"\\]|\\.)*)"', html)
@@ -653,7 +691,6 @@ def _enrich_with_youtube_api(video_ids: list[str], api_key: str) -> dict[str, di
         url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet&id={ids_param}&key={api_key}"
         
         try:
-            import urllib.request
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=30) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
