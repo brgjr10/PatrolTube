@@ -243,3 +243,17 @@ def test_compose_does_not_override_the_non_root_user():
     assert "patroltube-data:/app/data" in compose
     dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "USER appuser" in dockerfile
+
+
+def test_ci_installs_the_pins_and_runs_the_smoke_test():
+    """PATROLTUBE-025: without CI the pinned requirements and the runtime stack
+    drift apart unnoticed, which is how PATROLTUBE-006 shipped. The 200 checks
+    above are only a drift guard if something actually runs them against a fresh
+    install, so the workflow is asserted to exist and to do both halves."""
+    workflow = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+    assert workflow.is_file(), "no CI workflow: the pins can drift unchecked"
+    text = workflow.read_text(encoding="utf-8")
+    assert "pip install -r requirements.txt" in text
+    assert "python -m pytest tests -q" in text
+    assert "python -m compileall -q ." in text
+    assert "push:" in text and "pull_request:" in text
