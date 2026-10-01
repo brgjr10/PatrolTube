@@ -1,5 +1,14 @@
-fastapi==0.115.0
-uvicorn==0.32.0
-yt-dlp==2024.12.06
-jinja2==3.1.4
-python-multipart==0.0.12
+# Reconciled against the environment the app actually runs in (PATROLTUBE-011).
+# The previous pins were ~2 years behind on yt-dlp and, critically, behind on
+# fastapi/starlette — which is why GET / 500'd on the current starlette
+# TemplateResponse signature (PATROLTUBE-006).
+fastapi==0.136.1
+uvicorn==0.47.0
+yt-dlp==2026.7.4
+jinja2==3.1.6
+
+# python-multipart was declared but never imported: the app has no form endpoints.
+
+# Test-only, installed by CI and by developers running the suite.
+pytest==9.1.1
+httpx==0.28.1
